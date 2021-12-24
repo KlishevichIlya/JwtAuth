@@ -2,7 +2,7 @@
 using Microsoft.AspNetCore.Mvc;
 using WebApiCors.Data;
 using WebApiCors.Dtos;
-using WebApiCors.Filters;
+using WebApiCors.Entities;
 using WebApiCors.Helpers;
 using WebApiCors.Models;
 
@@ -21,6 +21,7 @@ namespace WebApiCors.Controllers
         }
 
         [HttpPost("register")]
+        [AllowAnonymous]
         public IActionResult Register(RegisterDto dto)
         {
             var user = new User
@@ -34,26 +35,30 @@ namespace WebApiCors.Controllers
         }
 
         [HttpPost("login")]
-        public IActionResult Login(LoginDto dto)
+        [AllowAnonymous]
+        public IActionResult Login([FromBody] AuthenticateRequest model)
         {
-            var user = _userRepository.GetByEmail(dto.Email);
-            if (user is null)
-                return BadRequest(new { message = "Invalid credentials" });
-            if (!BCrypt.Net.BCrypt.Verify(dto.Password, user.Password))
-                return BadRequest(new { message = " Invalid password" });
-            var jwt = _jwtService.Generate(user.Id);
-            Response.Cookies.Append("jwt", jwt, new CookieOptions
-            {
-                HttpOnly = true,
-            });
-            return Ok(new 
-            {
-                message = "success"
-            });
+            var response = _jwtService.Authenticate(model, ipAddress());
+            if(response is null)
+                return BadRequest(new { message = "Incorrect email or password" });
+            setTokenCookie(response.RefreshToken);
+            return Ok(response);
+        }
+
+        [HttpPost("refresh-token")]
+        public IActionResult RefreshToken()
+        {
+            var refreshToken = Request.Cookies["refreshToken"];
+            var response = _jwtService.RefreshToken(refreshToken, ipAddress());
+
+            if (response == null)
+                return Unauthorized(new { message = "Invalid token" });
+            setTokenCookie(response.RefreshToken);
+            return Ok(response);
         }
 
         [HttpGet("user/{id:int}")]
-        [TypeFilter(typeof(AuthorizationAttribute))]
+        [Authorize]
         public IActionResult User(int id)
         {
             try
@@ -67,14 +72,29 @@ namespace WebApiCors.Controllers
             }            
         }
 
-        [HttpPost("logout")]
-        public IActionResult Logout()
+        [HttpGet("test")]
+        [Authorize]
+        public IActionResult Test()
         {
-            Response.Cookies.Delete("jwt");
-            return Ok(new
+            return Ok("test");
+        }
+
+        private void setTokenCookie(string token)
+        {
+            var cookieOptions = new CookieOptions
             {
-                message = "Success"
-            });
+                HttpOnly = true,
+                Expires = DateTime.UtcNow.AddDays(7)
+            };
+            Response.Cookies.Append("refreshToken", token, cookieOptions);
+        }
+
+        private string ipAddress()
+        {
+            if (Request.Headers.ContainsKey("X-Forwarded-For"))
+                return Request.Headers["X-Forwarded-For"];
+            else
+                return HttpContext.Connection.RemoteIpAddress.MapToIPv4().ToString();
         }
     }
 }
